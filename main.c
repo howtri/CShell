@@ -2,12 +2,14 @@
 #include <stdlib.h>
 #include <stdbool.h> 
 #include <string.h>
+#include <unistd.h>
 
 
-struct shellStructures
+
+struct shellAttributes
 {
     char* running;
-    int lastStatus; // set to 0 at the start
+    int lastForegroundStatus; // set to 0 at the start
 };
 
 struct process
@@ -86,19 +88,40 @@ void parseCommand(char* input, struct command* currCommand)
     }
 }
 
-void handleBuiltIns(struct command* current)
+void handleBuiltIns(struct shellAttributes* currShell, struct command* current)
 {
+    // changes directory based on argument of relative or absolute path
+    // if no path is provided change to the HOME directory
     if (strcmp(current->binary, "cd") == 0)
     {
-        printf("cd\n");
+        char* workingDir[100];
+        printf("cd stuff\n");
+        // change to HOME directory
+        if (current->arguments == NULL) 
+        {
+            char* homeDir = getenv("HOME");
+            printf("Home directory is %s\n", homeDir);
+            printf("%s\n", getcwd(workingDir, 100));
+            chdir(homeDir);
+            printf("%s\n", getcwd(workingDir, 100));
+        } 
+        else // DO WE WANT TO CHECK THAT ITS EXACTLY 1?
+        {
+            printf("%s\n", getcwd(workingDir, 100));
+            chdir(current->arguments);
+            printf("%s\n", getcwd(workingDir, 100));
+        }
+
     }
     else if (strcmp(current->binary, "status") == 0)
     {
-        printf("status\n");
+        printf("exit status %d\n", currShell->lastForegroundStatus);
+        printf("I need to have support for signals also\n");
     }
     else if (strcmp(current->binary, "exit") == 0)
     {
-        printf("exiting\n");
+        printf("exiting\n"); // NEED TO CHECK NO ARGS?
+        printf("I NEED TO KILL ALL PROCS I STARTED\n");
         exit(0);
     }
 }
@@ -107,6 +130,9 @@ void handleBuiltIns(struct command* current)
 */
 int main(int argc, char* argv[])
 {
+    // initialize our shellAttributes struct to store info the shell as a whole needs
+    struct shellAttributes* shell = malloc(sizeof(struct shellAttributes));
+    shell->lastForegroundStatus = 0;
     bool run = true;
     while (run)
     {
@@ -133,7 +159,7 @@ int main(int argc, char* argv[])
         printf("binary: %s\n", currCommand->binary);
         printf("arguments: %s\n", currCommand->arguments);
         
-        handleBuiltIns(currCommand); // need to pass shell also if we need to close procs or return exit code
+        handleBuiltIns(shell, currCommand); // need to pass shell also if we need to close procs or return exit code
 
     }
     return EXIT_SUCCESS;
