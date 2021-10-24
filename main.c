@@ -36,6 +36,61 @@ void exitShell()
     // kill any other procs or jobs started
 }
 
+char* charExpansion(char* expand)
+{
+    int count = 0;
+    int countExpanded = 0;
+    char* expanded = calloc(strlen(expand), sizeof(char));
+    bool previousMatch = false;
+    while (expand[count] != NULL)
+    {
+        if (expand[count] == '$')
+        {
+            if (previousMatch) {
+                char* pid;
+                int size = asprintf(&pid, "%d", getpid());
+                strcat(expanded, pid);
+                // reallocate memory to account for expanding $$ to the pid
+                expanded = realloc(expanded, strlen(expanded) + size - 1);
+                countExpanded += size;
+                free(pid);
+                previousMatch = false;
+            }
+            else
+            {
+                // see $ for the first time. wait to append this char until we see if the next is also $
+                previousMatch = true;
+            }
+            // always increment count but hold countExpanded when we've just seen one $
+            count++;
+            continue;
+        }
+        if (previousMatch) {
+            // the previous was $ but it wasn't followed by another $. go back and add it
+            expanded[countExpanded] = '$';
+            countExpanded++;
+            previousMatch = false;
+        }
+        expanded[countExpanded] = expand[count];
+        countExpanded++;
+        count++;
+    }
+
+    // if a single $ was the last character add outside the loop
+    if (previousMatch) {
+        expanded[countExpanded] = '$';
+    }
+
+    printf("--------------new: ");
+    count = 0;
+    while (expanded[count] != NULL) {
+        printf("%c", expanded[count]);
+        count++;
+    }
+    printf(" :new--------------");
+    return expanded;
+}
+
 void parseCommand(char* input, struct command* currCommand)
 {
     char* saveptr = input;
@@ -46,6 +101,8 @@ void parseCommand(char* input, struct command* currCommand)
 
     while ((token = strtok_r(saveptr, " \n", &saveptr)))
     {
+        // perform character expansion and set token to returned char array pointer
+        token = charExpansion(token);
         // check for comments and pull the binary
         if (!firstProcessed)
         {
@@ -58,6 +115,7 @@ void parseCommand(char* input, struct command* currCommand)
             // store our binary name
             currCommand->binary = calloc(strlen(token) + 1, sizeof(char));
             strcpy(currCommand->binary, token);
+            free(token);
 
             // store binary name as the first index of arguments
             // initialize for a max of 512 arguments with space for a null terminator
@@ -205,9 +263,9 @@ int main(int argc, char* argv[])
         ssize_t lineSize = 0;
         lineSize = getline(&line, &len, stdin);
 
-        if (!lineSize)
+        if (*line == NULL)
         {
-            printf("Empty yo");
+            printf("Looking empty\n");
             continue;
         }
 
