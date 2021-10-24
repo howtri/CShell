@@ -42,7 +42,7 @@ char* charExpansion(char* expand)
     int countExpanded = 0;
     char* expanded = calloc(strlen(expand), sizeof(char));
     bool previousMatch = false;
-    while (expand[count] != NULL)
+    while (expand[count] != '\0')
     {
         if (expand[count] == '$')
         {
@@ -83,9 +83,9 @@ char* charExpansion(char* expand)
 
     printf("--------------new: ");
     count = 0;
-    while (expanded[count] != NULL) {
+    while (expanded[count] != '\0') {
         printf("%c", expanded[count]);
-        count++;
+        count++; //                                             ----------------------------------------------------- !
     }
     printf(" :new--------------");
     return expanded;
@@ -161,22 +161,24 @@ bool handleBuiltIns(struct shellAttributes* currShell, struct command* current)
     // if no path is provided change to the HOME directory
     if (strcmp(current->binary, "cd") == 0)
     {
-        char* workingDir[100];
+        
         printf("cd stuff\n");
         // change to HOME directory if the only arg is cd
         if (current->arguments[1] == NULL) 
         {
-            char* homeDir = getenv("HOME");
-            printf("Home directory is %s\n", homeDir);
-            printf("%s\n", getcwd(workingDir, 100));
+            char* homeDir = getenv("HOME");       
+
+            // REMOVE --- for debug only
+            // char* workingDir[100];       - -------------------------------------------------------------------------------- !
+            //printf("%s\n", getcwd(workingDir, 100));
+            //
+            //
+
             chdir(homeDir);
-            printf("%s\n", getcwd(workingDir, 100));
         } 
         else // DO WE WANT TO CHECK THAT ITS EXACTLY 1?
         {
-            printf("%s\n", getcwd(workingDir, 100));
             chdir(current->arguments[1]);
-            printf("%s\n", getcwd(workingDir, 100));
         }
         return true;
     }
@@ -197,7 +199,7 @@ bool handleBuiltIns(struct shellAttributes* currShell, struct command* current)
 
 void wireRedirection()
 {
-    // dup2 shit
+    // dup2 shit - You must do any input and/or output redirection using dup2(). The redirection must be done before using exec() to run the command.
     printf("OMFG");
 }
 
@@ -229,6 +231,7 @@ void executeForeground(struct shellAttributes* shell, struct command* current)
     default:
         // In the parent process
         // Wait for child's termination
+        printf("spawned pid == %d\n", spawnPid);
         spawnPid = waitpid(spawnPid, &childStatus, 0);
 
         if (WIFEXITED(childStatus))
@@ -241,8 +244,10 @@ void executeForeground(struct shellAttributes* shell, struct command* current)
     }
 }
 
-void executeBackground()
+void executeBackground(struct command* current)
 {
+    printf("Launching background process\n");
+
 
 }
 
@@ -254,18 +259,16 @@ int main(int argc, char* argv[])
     bool run = true;
     while (run)
     {
-        
+        // while backgroundProc->next != NULL - waitid nhohang for all.
 
         printf(": ");
         fflush(stdout);
         char* line = NULL;
         size_t len = 0;
-        ssize_t lineSize = 0;
-        lineSize = getline(&line, &len, stdin);
+        getline(&line, &len, stdin);
 
-        if (*line == NULL)
+        if (*line == '\n')
         {
-            printf("Looking empty\n");
             continue;
         }
 
@@ -277,7 +280,7 @@ int main(int argc, char* argv[])
         printf("binary: %s\n", currCommand->binary);
         printf("arguments: \n");
         int argCounter = 0;
-        while (currCommand->arguments[argCounter] != NULL)
+        while (currCommand->arguments[argCounter] != '\0')
         {
             printf("index %d -> %s \n", argCounter, currCommand->arguments[argCounter]);
             argCounter++;
@@ -289,11 +292,10 @@ int main(int argc, char* argv[])
         {
             if (currCommand->background)
             {
-                printf("Launching background process\n");
+                executeBackground(currCommand);
             }
             else
             {
-                printf("Launching foreground process\n");
                 executeForeground(shell, currCommand); // pass shell to store status and current command
             }
         }
