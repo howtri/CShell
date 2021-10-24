@@ -3,6 +3,8 @@
 #include <stdbool.h> 
 #include <string.h>
 #include <unistd.h>
+#include <sys/wait.h>
+#include <sys/types.h>
 
 
 
@@ -141,12 +143,44 @@ void wireRedirection()
     printf("OMFG");
 }
 
-void executeForeground()
+void executeForeground(struct shellAttributes* shell, struct command* current)
 {
     // execlp() or execvp() int execvp(const char* command, char* argv[]);
     // The second argument (argv) represents the list of arguments to command. This is an array of char* strings.
 
+    // below based on the canvas example in process API - Executing a new program
+    int childStatus;
 
+    // Fork a new process
+    pid_t spawnPid = fork();
+
+    switch (spawnPid) {
+    case -1:
+        perror("fork()\n");
+        exit(1);
+        break;
+    case 0:
+        // In the child process
+        printf("CHILD(%d) running ls command\n", getpid());
+        // Replace the current program with "/bin/ls"
+        execvp(current->binary, current->arguments);
+        // exec only returns if there is an error
+        perror("execvp");
+        exit(2);
+        break;
+    default:
+        // In the parent process
+        // Wait for child's termination
+        spawnPid = waitpid(spawnPid, &childStatus, 0);
+
+        if (WIFEXITED(childStatus))
+        {
+            shell->lastForegroundStatus = WEXITSTATUS(childStatus);
+        }
+        printf("%d status code\n", shell->lastForegroundStatus);
+        printf("PARENT(%d): child(%d) terminated. Exiting\n", getpid(), spawnPid);
+        break;
+    }
 }
 
 void executeBackground()
@@ -202,6 +236,7 @@ int main(int argc, char* argv[])
             else
             {
                 printf("Launching foreground process\n");
+                executeForeground(shell, currCommand); // pass shell to store status and current command
             }
         }
         
