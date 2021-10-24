@@ -24,7 +24,7 @@ struct command
 {
     char* binary;
     // continually reallocate for args?
-    char* arguments;
+    char** arguments;
     int status;
     bool background;
 };
@@ -40,7 +40,7 @@ void parseCommand(char* input, struct command* currCommand)
     char* token;
     
     bool firstProcessed = false;
-    bool argsInit = false;
+    int argCounter = 0;
 
     while ((token = strtok_r(saveptr, " \n", &saveptr)))
     {
@@ -56,31 +56,38 @@ void parseCommand(char* input, struct command* currCommand)
             // store our binary name
             currCommand->binary = calloc(strlen(token) + 1, sizeof(char));
             strcpy(currCommand->binary, token);
+
+            // store binary name as the first index of arguments
+            // initialize for a max of 512 arguments with space for a null terminator
+            //
+            // IMPROVEMENT
+            // GET REALLOC TO WORK!!!!
+            //
+            //
+            currCommand->arguments = malloc(513 * sizeof(char*));
+            currCommand->arguments[0] = malloc(strlen(currCommand->binary) + 1);
+            strcpy(currCommand->arguments[0], currCommand->binary);
+            //currCommand->arguments[0] = currCommand->binary;
+            printf("index 0 %s\n", currCommand->arguments[0]);
+            argCounter++;
             continue;
         }
+        
 
-
-        // initialize our first arg, after this we reallocate for all additional tokens
-        if (!argsInit)
-        {
-            argsInit = true;
-            currCommand->arguments = calloc(strlen(token) + 1, sizeof(char));
-            strcpy(currCommand->arguments, token);
-            //strcat(currCommand->arguments, " ");
-            continue;
-        }
-
-        currCommand->arguments = realloc(currCommand->arguments, strlen(currCommand->arguments) + strlen(token) + 1);
-        strcat(currCommand->arguments, token);
-        //strcat(currCommand->arguments, " ");
+        currCommand->arguments[argCounter] = malloc(strlen(token) + 1);
+        //currCommand->arguments[argCounter] = token;
+        strcpy(currCommand->arguments[argCounter], token);
+        printf("index %d : %s\n", argCounter, currCommand->arguments[argCounter]);
+        argCounter++;
     }
 
+    
     currCommand->background = false;
     if (currCommand->arguments != NULL)
     {
-        char lastChar = currCommand->arguments[strlen(currCommand->arguments) - 3];
-        printf("last val in args is %c\n", lastChar);
-        if (lastChar == '&')
+        char* lastVal = currCommand->arguments[argCounter - 1];
+        printf("last val in args is %s\n", lastVal);
+        if (strcmp(lastVal, "&") == 0)
         {
             printf("Yeah looking backgroundish to me\n");
             currCommand->background = true;
@@ -88,7 +95,7 @@ void parseCommand(char* input, struct command* currCommand)
     }
 }
 
-void handleBuiltIns(struct shellAttributes* currShell, struct command* current)
+bool handleBuiltIns(struct shellAttributes* currShell, struct command* current)
 {
     // changes directory based on argument of relative or absolute path
     // if no path is provided change to the HOME directory
@@ -96,8 +103,8 @@ void handleBuiltIns(struct shellAttributes* currShell, struct command* current)
     {
         char* workingDir[100];
         printf("cd stuff\n");
-        // change to HOME directory
-        if (current->arguments == NULL) 
+        // change to HOME directory if the only arg is cd
+        if (current->arguments[1] == NULL) 
         {
             char* homeDir = getenv("HOME");
             printf("Home directory is %s\n", homeDir);
@@ -108,15 +115,16 @@ void handleBuiltIns(struct shellAttributes* currShell, struct command* current)
         else // DO WE WANT TO CHECK THAT ITS EXACTLY 1?
         {
             printf("%s\n", getcwd(workingDir, 100));
-            chdir(current->arguments);
+            chdir(current->arguments[1]);
             printf("%s\n", getcwd(workingDir, 100));
         }
-
+        return true;
     }
     else if (strcmp(current->binary, "status") == 0)
     {
         printf("exit status %d\n", currShell->lastForegroundStatus);
         printf("I need to have support for signals also\n");
+        return true;
     }
     else if (strcmp(current->binary, "exit") == 0)
     {
@@ -124,10 +132,28 @@ void handleBuiltIns(struct shellAttributes* currShell, struct command* current)
         printf("I NEED TO KILL ALL PROCS I STARTED\n");
         exit(0);
     }
+    return false;
 }
-/*
-*   entry point and launch menu function
-*/
+
+void wireRedirection()
+{
+    // dup2 shit
+    printf("OMFG");
+}
+
+void executeForeground()
+{
+    // execlp() or execvp() int execvp(const char* command, char* argv[]);
+    // The second argument (argv) represents the list of arguments to command. This is an array of char* strings.
+
+
+}
+
+void executeBackground()
+{
+
+}
+
 int main(int argc, char* argv[])
 {
     // initialize our shellAttributes struct to store info the shell as a whole needs
@@ -157,10 +183,31 @@ int main(int argc, char* argv[])
         free(line);
         
         printf("binary: %s\n", currCommand->binary);
-        printf("arguments: %s\n", currCommand->arguments);
-        
-        handleBuiltIns(shell, currCommand); // need to pass shell also if we need to close procs or return exit code
+        printf("arguments: \n");
+        int argCounter = 0;
+        while (currCommand->arguments[argCounter] != NULL)
+        {
+            printf("index %d -> %s \n", argCounter, currCommand->arguments[argCounter]);
+            argCounter++;
+        }
+        printf("\n");
 
+        
+        if (!handleBuiltIns(shell, currCommand)) // need to pass shell also if we need to close procs or return exit code
+        {
+            if (currCommand->background)
+            {
+                printf("Launching background process\n");
+            }
+            else
+            {
+                printf("Launching foreground process\n");
+            }
+        }
+        
+
+
+        /// YOU NEED TO FREE ALL THIS SHIT YOUVE BEEN ALLOCATING
     }
     return EXIT_SUCCESS;
 }
