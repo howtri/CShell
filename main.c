@@ -10,16 +10,15 @@
 
 struct shellAttributes
 {
-    char* running;
-    int lastForegroundStatus; // set to 0 at the start
+    struct bgProcesss* bgActive;
+    // set to 0 at the start
+    int lastForegroundStatus; 
 };
 
-struct process
+struct bgProcess
 {
-    char* name;
     int pid;
-    int exitStatus;
-    struct process* next;
+    struct bgProcess* next;
 };
 
 struct command 
@@ -91,7 +90,7 @@ char* charExpansion(char* expand)
     return expanded;
 }
 
-void parseCommand(char* input, struct command* currCommand)
+bool parseCommand(char* input, struct command* currCommand)
 {
     char* saveptr = input;
     char* token;
@@ -110,7 +109,7 @@ void parseCommand(char* input, struct command* currCommand)
             // skip over any comments
             if (strcmp("#", token) == 0)
             {
-                continue;
+                return false;
             }
             // store our binary name
             currCommand->binary = calloc(strlen(token) + 1, sizeof(char));
@@ -140,19 +139,20 @@ void parseCommand(char* input, struct command* currCommand)
         printf("index %d : %s\n", argCounter, currCommand->arguments[argCounter]);
         argCounter++;
     }
+    currCommand->arguments[argCounter] = '\0';
 
-    
+    // check if its a background process
     currCommand->background = false;
-    if (currCommand->arguments != NULL)
+    char* lastVal = currCommand->arguments[argCounter - 1];
+    printf("last val in args is %s\n", lastVal);
+    if (strcmp(lastVal, "&") == 0)
     {
-        char* lastVal = currCommand->arguments[argCounter - 1];
-        printf("last val in args is %s\n", lastVal);
-        if (strcmp(lastVal, "&") == 0)
-        {
-            printf("Yeah looking backgroundish to me\n");
-            currCommand->background = true;
-        }
+        currCommand->background = true;
+        // we dont want to pass & as an arg so we move \0 to &s position
+        currCommand->arguments[argCounter - 1] = '\0';
+        free(currCommand->arguments[argCounter]);
     }
+    return true;
 }
 
 bool handleBuiltIns(struct shellAttributes* currShell, struct command* current)
@@ -205,9 +205,6 @@ void wireRedirection()
 
 void executeForeground(struct shellAttributes* shell, struct command* current)
 {
-    // execlp() or execvp() int execvp(const char* command, char* argv[]);
-    // The second argument (argv) represents the list of arguments to command. This is an array of char* strings.
-
     // below based on the canvas example in process API - Executing a new program
     int childStatus;
 
@@ -221,17 +218,14 @@ void executeForeground(struct shellAttributes* shell, struct command* current)
         break;
     case 0:
         // In the child process
-        printf("CHILD(%d) running ls command\n", getpid());
-        // Replace the current program with "/bin/ls"
         execvp(current->binary, current->arguments);
         // exec only returns if there is an error
         perror("execvp");
-        exit(2);
-        break;
+        // exit status of 1 when binary not found
+        exit(1);
     default:
         // In the parent process
         // Wait for child's termination
-        printf("spawned pid == %d\n", spawnPid);
         spawnPid = waitpid(spawnPid, &childStatus, 0);
 
         if (WIFEXITED(childStatus))
@@ -239,30 +233,113 @@ void executeForeground(struct shellAttributes* shell, struct command* current)
             shell->lastForegroundStatus = WEXITSTATUS(childStatus);
         }
         printf("%d status code\n", shell->lastForegroundStatus);
+
+        /*
+        * 
+        } else{
+			printf("Child %d exited abnormally due to signal %d\n", childPid, WTERMSIG(childStatus));
+		}
+        
+        */
+
+
         printf("PARENT(%d): child(%d) terminated. Exiting\n", getpid(), spawnPid);
         break;
     }
 }
 
-void executeBackground(struct command* current)
+int executeBackground(struct command* current)
 {
     printf("Launching background process\n");
+    // below based on the canvas example in process API - Executing a new program
+    // Fork a new process
+    pid_t spawnPid = fork();
+
+    switch (spawnPid) {
+    case -1:
+        perror("fork()\n");
+        exit(1);
+        break;
+    case 0:
+        // In the child process
+        execvp(current->binary, current->arguments);
+        // exec only returns if there is an error
+        perror("execvp");
+        exit(1);
+    default:
+        // In the parent process
+        // Wait for child's termination
+        printf("PARENT(%d) launched BACKGROUND child(%d)\n", getpid(), spawnPid);
+        return spawnPid;
+    }
+
+}
+
+void checkBackgroundProcs(struct shellAttributes* shell)
+{
+    printf("Our background procs!!!!\n");
+    struct bgProcess* iter = NULL;
+    struct bgProcess* previous = NULL;
+    iter = shell->bgActive;
+    while (iter != NULL)
+    {
+        printf("Looking at bg pid %d", iter->pid);
+        int childStatus;
+        int childReturn= waitpid(iter->pid, &childStatus, WNOHANG);
+        if (childReturn) {
+            if (WIFEXITED(childStatus))
+            {
+                int status = WEXITSTATUS(childStatus);
+                printf(" !!!!!!!!!!!!!!! Returned pid %d with status %d\n", childReturn, status);
+
+                /*
+                
+                } else{
+			printf("Child %d exited abnormally due to signal %d\n", childPid, WTERMSIG(childStatus));
+		}
+
+                */
 
 
+
+            }
+            if (previous != NULL)
+            {
+                // remove from middle of linked list by setting previous to skip it
+                previous->next = iter->next;
+                struct bgProcess* hold = iter;
+                free(hold);
+                iter = iter->next;
+            } 
+            else
+            {
+               // we're at the start so we set the head to the following
+                shell->bgActive = iter->next;
+                struct bgProcess* hold = iter;
+                free(hold);
+                iter = iter->next;
+            }
+            // iter is now a new node and previous is directly before our new iter
+            continue;
+        }
+        previous = iter;
+        iter = iter->next;
+    }
 }
 
 int main(int argc, char* argv[])
 {
     // initialize our shellAttributes struct to store info the shell as a whole needs
     struct shellAttributes* shell = malloc(sizeof(struct shellAttributes));
+    shell->bgActive = NULL;
     shell->lastForegroundStatus = 0;
     bool run = true;
     while (run)
     {
         // while backgroundProc->next != NULL - waitid nhohang for all.
-
-        printf(": ");
         fflush(stdout);
+        checkBackgroundProcs(shell);
+        printf(": ");
         char* line = NULL;
         size_t len = 0;
         getline(&line, &len, stdin);
@@ -274,7 +351,10 @@ int main(int argc, char* argv[])
 
         // create our struct for the command we'll process
         struct command* currCommand = malloc(sizeof(struct command));
-        parseCommand(line, currCommand);
+        if (!parseCommand(line, currCommand))
+        {
+            free(currCommand);
+        }
         free(line);
         
         printf("binary: %s\n", currCommand->binary);
@@ -288,21 +368,44 @@ int main(int argc, char* argv[])
         printf("\n");
 
         
-        if (!handleBuiltIns(shell, currCommand)) // need to pass shell also if we need to close procs or return exit code
+        if (!handleBuiltIns(shell, currCommand))
         {
             if (currCommand->background)
             {
-                executeBackground(currCommand);
+                struct bgProcess* background = malloc(sizeof(struct bgProcess));
+                background->pid = executeBackground(currCommand);
+                // if there are no active background procs this becomes the first
+                // otherwise add at the front of the list
+                if (shell->bgActive == NULL)
+                {
+                    printf("First background!\n");
+                    shell->bgActive = background;
+                }
+                else
+                {
+                    background->next = shell->bgActive;
+                    shell->bgActive = background;
+                }
             }
             else
             {
-                executeForeground(shell, currCommand); // pass shell to store status and current command
+                // pass shell so we can easily store exit information
+                executeForeground(shell, currCommand);
             }
         }
         
-
-
-        /// YOU NEED TO FREE ALL THIS SHIT YOUVE BEEN ALLOCATING
+        // free dynamically allocated
+        free(currCommand->binary);
+        argCounter = 0;
+        while (currCommand->arguments[argCounter] != '\0')
+        {
+            //  THINK WE MAY BE ABLE TO FREE ONE AFTER THIS TOO FOR OUR NULL TERMINATOR! -----------------------------------------------------------------------------!
+            free(currCommand->arguments[argCounter]);
+            argCounter++;
+        }
+        free(currCommand->arguments);
+        free(currCommand);
     }
+    // free shell and all that  !!!!!!!!!!!!!!!!!! -----------------------------------------------------------------------------!
     return EXIT_SUCCESS;
 }
