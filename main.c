@@ -5,7 +5,7 @@
 #include <unistd.h>
 #include <sys/wait.h>
 #include <sys/types.h>
-
+#include <sys/types.h>
 
 
 struct shellAttributes
@@ -79,14 +79,6 @@ char* charExpansion(char* expand)
     if (previousMatch) {
         expanded[countExpanded] = '$';
     }
-
-    printf("--------------new: ");
-    count = 0;
-    while (expanded[count] != '\0') {
-        printf("%c", expanded[count]);
-        count++; //                                             ----------------------------------------------------- !
-    }
-    printf(" :new--------------");
     return expanded;
 }
 
@@ -107,7 +99,7 @@ bool parseCommand(char* input, struct command* currCommand)
         {
             firstProcessed = true;
             // skip over any comments
-            if (strcmp("#", token) == 0)
+            if (strncmp("#", token, 1) == 0)
             {
                 return false;
             }
@@ -127,7 +119,6 @@ bool parseCommand(char* input, struct command* currCommand)
             currCommand->arguments[0] = malloc(strlen(currCommand->binary) + 1);
             strcpy(currCommand->arguments[0], currCommand->binary);
             //currCommand->arguments[0] = currCommand->binary;
-            printf("index 0 %s\n", currCommand->arguments[0]);
             argCounter++;
             continue;
         }
@@ -136,7 +127,6 @@ bool parseCommand(char* input, struct command* currCommand)
         currCommand->arguments[argCounter] = malloc(strlen(token) + 1);
         //currCommand->arguments[argCounter] = token;
         strcpy(currCommand->arguments[argCounter], token);
-        printf("index %d : %s\n", argCounter, currCommand->arguments[argCounter]);
         argCounter++;
     }
     currCommand->arguments[argCounter] = '\0';
@@ -144,7 +134,6 @@ bool parseCommand(char* input, struct command* currCommand)
     // check if its a background process
     currCommand->background = false;
     char* lastVal = currCommand->arguments[argCounter - 1];
-    printf("last val in args is %s\n", lastVal);
     if (strcmp(lastVal, "&") == 0)
     {
         currCommand->background = true;
@@ -161,8 +150,6 @@ bool handleBuiltIns(struct shellAttributes* currShell, struct command* current)
     // if no path is provided change to the HOME directory
     if (strcmp(current->binary, "cd") == 0)
     {
-        
-        printf("cd stuff\n");
         // change to HOME directory if the only arg is cd
         if (current->arguments[1] == NULL) 
         {
@@ -197,10 +184,71 @@ bool handleBuiltIns(struct shellAttributes* currShell, struct command* current)
     return false;
 }
 
-void wireRedirection()
+bool wireIORedirection(struct command* currCommand)
 {
-    // dup2 shit - You must do any input and/or output redirection using dup2(). The redirection must be done before using exec() to run the command.
-    printf("OMFG");
+    // The redirection must be done before using exec() to run the command but should be done in the child proc.
+    
+    // create an entire new array so we don't have to worry about shifting values upon detecting io redirection
+
+    char **ioArguments = malloc(513 * sizeof(char*));
+
+    // copy over all arguments until chars < or > are encountered
+    int ioCounter = 0;
+    int argCounter = 0;
+    while (currCommand->arguments[argCounter] != '\0')
+    {
+        if (strcmp(currCommand->arguments[argCounter], "<") == 0)
+        {
+            printf("Doing some stuff for input\n");
+            // An input file redirected via stdin should be opened for reading only; if your shell cannot open the file for reading, it should print an error message and set the exit status to 1 (but don't exit the shell).
+            char* inFilePath = currCommand->arguments[argCounter + 1];
+            //int file_descriptor = open(inFilePath, O_RD | O_CREAT | O_TRUNC, 0640);
+            // dup2()
+            argCounter += 2;
+
+            // if can't open either
+            return false;
+        }
+        else if (strcmp(currCommand->arguments[argCounter], ">") == 0)
+        {
+            printf("Doing some stuff for output\n");
+            // Similarly, an output file redirected via stdout should be opened for writing only; it should be truncated if it already exists or created if it does not exist. If your shell cannot open the output file it should print an error message and set the exit status to 1 (but don't exit the shell).
+            char* outFilePath = currCommand->arguments[argCounter + 1];
+            //int file_descriptor = open(inFilePath, O_RD | O_CREAT | O_TRUNC, 0640);
+            // dup2()
+            argCounter += 2;
+            // if can't open either
+            return false;
+        }
+        else
+        {
+            ioArguments[ioCounter] = malloc(strlen(currCommand->arguments[argCounter]) + 1);
+            strcpy(ioArguments[ioCounter], currCommand->arguments[argCounter]);
+            ioCounter++;
+            argCounter++;
+        }
+    }
+    ioArguments[ioCounter] = '\0';
+
+    // free our prior args and replace with ioArgs
+    while (currCommand->arguments[argCounter] != '\0')
+    {
+        //  THINK WE MAY BE ABLE TO FREE ONE AFTER THIS TOO FOR OUR NULL TERMINATOR! -----------------------------------------------------------------------------!
+        free(currCommand->arguments[argCounter]);
+        argCounter++;
+    }
+    free(currCommand->arguments);
+
+    currCommand->arguments = ioArguments;
+
+    ioCounter = 0;
+    printf("Our io arguments sir -----> ");
+    while (currCommand->arguments[ioCounter] != '\0')
+    {
+        printf("%s ", currCommand->arguments[ioCounter]);
+        ioCounter++;
+    }
+    return true;
 }
 
 void executeForeground(struct shellAttributes* shell, struct command* current)
@@ -218,6 +266,10 @@ void executeForeground(struct shellAttributes* shell, struct command* current)
         break;
     case 0:
         // In the child process
+        if (!wireIORedirection(current))
+        {
+            printf("Something terrible! Set the exit status to 1\n");
+        }
         execvp(current->binary, current->arguments);
         // exec only returns if there is an error
         perror("execvp");
@@ -250,7 +302,6 @@ void executeForeground(struct shellAttributes* shell, struct command* current)
 
 int executeBackground(struct command* current)
 {
-    printf("Launching background process\n");
     // below based on the canvas example in process API - Executing a new program
     // Fork a new process
     pid_t spawnPid = fork();
@@ -262,6 +313,10 @@ int executeBackground(struct command* current)
         break;
     case 0:
         // In the child process
+        if (!wireIORedirection(current))
+        {
+            printf("Something terrible! Set the exit status to 1\n");
+        }
         execvp(current->binary, current->arguments);
         // exec only returns if there is an error
         perror("execvp");
@@ -277,7 +332,6 @@ int executeBackground(struct command* current)
 
 void checkBackgroundProcs(struct shellAttributes* shell)
 {
-    printf("Our background procs!!!!\n");
     struct bgProcess* iter = NULL;
     struct bgProcess* previous = NULL;
     iter = shell->bgActive;
@@ -354,6 +408,8 @@ int main(int argc, char* argv[])
         if (!parseCommand(line, currCommand))
         {
             free(currCommand);
+            free(line);
+            continue;
         }
         free(line);
         
@@ -367,6 +423,10 @@ int main(int argc, char* argv[])
         }
         printf("\n");
 
+        wireIORedirection(currCommand);
+
+        printf("Exiting for testing io stuff");
+        exit(1);
         
         if (!handleBuiltIns(shell, currCommand))
         {
