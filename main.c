@@ -9,28 +9,16 @@
 #include <fcntl.h>
 #include <signal.h>
 
+// GLOBAL
 bool allowBackground = true;
-
-/* Our signal handler for SIGINT based off the canvas signals exploration*/
-void handle_SIGTSTP_shell(int signo) {
-    char* message = "Switching to disallow background procs\n";
-    allowBackground = false;
-    // We are using write rather than printf
-    write(STDOUT_FILENO, message, 40);
-}
-
-void handle_SIGTSTP_child(int signo) {
-    char* message = "Caught SIGTSTP, now go f off\n";
-    // We are using write rather than printf
-    write(STDOUT_FILENO, message, 40);
-    sleep(2);
-}
 
 struct shellAttributes
 {
     struct bgProcesss* bgActive;
     // set to 0 at the start
     int lastForegroundStatus;
+    bool lastExitFromSignal;
+    int lastSignalStatus;
 };
 
 struct bgProcess
@@ -47,6 +35,25 @@ struct command
     int status;
     bool background;
 };
+
+/* Our signal handler for SIGINT based off the canvas signals exploration*/
+void handle_SIGTSTP_shell(int signo) {
+
+    if (allowBackground)
+    {
+        char* message = "\nEntering foreground-only mode (& is now ignored)\n ";
+        allowBackground = false;
+        write(STDOUT_FILENO, message, 50);
+        fflush(stdout);
+    }
+    else
+    {
+        char* message = "\nExiting foreground-only mode\n ";
+        allowBackground = true;
+        write(STDOUT_FILENO, message, 30);
+        fflush(stdout);
+    }
+}
 
 void exitShell()
 {
@@ -177,15 +184,9 @@ bool handleBuiltIns(struct shellAttributes* currShell, struct command* current)
         {
             char* homeDir = getenv("HOME");       
 
-            // REMOVE --- for debug only
-            // char* workingDir[100];       - -------------------------------------------------------------------------------- !
-            //printf("%s\n", getcwd(workingDir, 100));
-            //
-            //
-
             chdir(homeDir);
         } 
-        else // DO WE WANT TO CHECK THAT ITS EXACTLY 1?
+        else // DO WE WANT TO CHECK THAT ITS EXACTLY 1? --------------------------------------------------------------------------------------- !
         {
             chdir(current->arguments[1]);
         }
@@ -193,9 +194,15 @@ bool handleBuiltIns(struct shellAttributes* currShell, struct command* current)
     }
     else if (strcmp(current->binary, "status") == 0)
     {
-        printf("exit status %d\n", currShell->lastForegroundStatus);
+        if (currShell->lastExitFromSignal)
+        {
+            printf("terminated by signal %d\n", currShell->lastSignalStatus);
+        }
+        else
+        {
+            printf("exit value %d\n", currShell->lastForegroundStatus);
+        }
         fflush(stdout);
-        printf("I need to have support for signals also\n");
         return true;
     }
     else if (strcmp(current->binary, "exit") == 0)
@@ -362,29 +369,24 @@ void executeForeground(struct shellAttributes* shell, struct command* current)
             break;
         }
 
+        // Initialize SIGTSTP_action struct to be empty - code based off canvas signals exploration
+        struct sigaction SIGTSTP_action = { 0 };
+        // SET SIGTSTP to be ignored for children
+        SIGTSTP_action.sa_handler = SIG_IGN;
+        sigfillset(&SIGTSTP_action.sa_mask);
+        SIGTSTP_action.sa_flags = 0;
+        sigaction(SIGTSTP, &SIGTSTP_action, NULL);
+
         // set signal for SIGINT for foreground children to default behavior based off canvas signal exploration
         struct sigaction SIGINT_action = { 0 };
         // SET SIGINT to be ignored
         SIGINT_action.sa_handler = SIG_DFL;
         sigfillset(&SIGINT_action.sa_mask);
         SIGINT_action.sa_flags = 0;
-        // Install our signal handler
         sigaction(SIGINT, &SIGINT_action, NULL);
 
-        // Initialize SIGTSTP_action struct to be empty - code based off canvas signals exploration
-        struct sigaction SIGTSTP_action = { 0 };
-        // SET SIGTSTP to use a custom handler
-        SIGTSTP_action.sa_handler = handle_SIGTSTP_child;
-        sigfillset(&SIGTSTP_action.sa_mask);
-        SIGTSTP_action.sa_flags = 0;
-        // Install our signal handler
-        sigaction(SIGTSTP, &SIGTSTP_action, NULL);
-
         execvp(current->binary, current->arguments);
-
-        // exec only returns if there is an error
         perror("execvp");
-
         // exit status of 1 when binary not found
         exit(1);
     default:
@@ -395,18 +397,16 @@ void executeForeground(struct shellAttributes* shell, struct command* current)
         if (WIFEXITED(childStatus))
         {
             shell->lastForegroundStatus = WEXITSTATUS(childStatus);
+            shell->lastExitFromSignal = false;
+            printf("%d status code\n", shell->lastForegroundStatus);
         }
-        printf("%d status code\n", shell->lastForegroundStatus);
+        else 
+        {
+            shell->lastExitFromSignal = true;
+            shell->lastSignalStatus = WTERMSIG(childStatus);
+            printf("Child %d exited abnormally due to signal %d\n", shell->lastSignalStatus);
+        }
         fflush(stdout);
-
-        /*
-        * 
-        } else{
-			printf("Child %d exited abnormally due to signal %d\n", childPid, WTERMSIG(childStatus));
-		}
-        
-        */
-
 
         printf("PARENT(%d): child(%d) terminated. Exiting\n", getpid(), spawnPid);
         fflush(stdout);
@@ -434,9 +434,10 @@ int executeBackground(struct command* current)
             // shell->lastForegroundStatus = 2;
         }
 
+        // SIGINT is already set to be ignored from the parent
         // set signal for SIGTSTP for background children to ignore based off canvas signal exploration
         struct sigaction SIGTSTP_action = { 0 };
-        // SET SIGINT to be ignored
+        // SET SIGTSTP to be ignored
         SIGTSTP_action.sa_handler = SIG_IGN;
         sigfillset(&SIGTSTP_action.sa_mask);
         SIGTSTP_action.sa_flags = 0;
@@ -450,7 +451,7 @@ int executeBackground(struct command* current)
     default:
         // In the parent process
         // Wait for child's termination
-        printf("PARENT(%d) launched BACKGROUND child(%d)\n", getpid(), spawnPid);
+        printf("background pid is %d\n", getpid(), spawnPid);
         fflush(stdout);
         return spawnPid;
     }
@@ -537,7 +538,8 @@ int main(int argc, char* argv[])
     // SET SIGTSTP to use a custom handler
     SIGTSTP_action.sa_handler = handle_SIGTSTP_shell;
     sigfillset(&SIGTSTP_action.sa_mask);
-    SIGTSTP_action.sa_flags = 0;
+    // prevent errors from getline or other interuptted calls
+    SIGTSTP_action.sa_flags = SA_RESTART;
     // Install our signal handler
     sigaction(SIGTSTP, &SIGTSTP_action, NULL);
 
@@ -545,6 +547,8 @@ int main(int argc, char* argv[])
     struct shellAttributes* shell = malloc(sizeof(struct shellAttributes));
     shell->bgActive = NULL;
     shell->lastForegroundStatus = 0;
+    shell->lastExitFromSignal = false;
+    shell->lastSignalStatus = 0;
     bool run = true;
     while (run)
     {
