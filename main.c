@@ -7,13 +7,30 @@
 #include <sys/types.h>
 #include <sys/types.h>
 #include <fcntl.h>
+#include <signal.h>
 
+bool allowBackground = true;
+
+/* Our signal handler for SIGINT based off the canvas signals exploration*/
+void handle_SIGTSTP_shell(int signo) {
+    char* message = "Switching to disallow background procs\n";
+    allowBackground = false;
+    // We are using write rather than printf
+    write(STDOUT_FILENO, message, 40);
+}
+
+void handle_SIGTSTP_child(int signo) {
+    char* message = "Caught SIGTSTP, now go f off\n";
+    // We are using write rather than printf
+    write(STDOUT_FILENO, message, 40);
+    sleep(2);
+}
 
 struct shellAttributes
 {
     struct bgProcesss* bgActive;
     // set to 0 at the start
-    int lastForegroundStatus; 
+    int lastForegroundStatus;
 };
 
 struct bgProcess
@@ -137,7 +154,11 @@ bool parseCommand(char* input, struct command* currCommand)
     char* lastVal = currCommand->arguments[argCounter - 1];
     if (strcmp(lastVal, "&") == 0)
     {
-        currCommand->background = true;
+        // if we've been set with SIGTSTP to disallow background procs
+        if (allowBackground)
+        {
+            currCommand->background = true;
+        }
         // we dont want to pass & as an arg so we move \0 to &s position
         currCommand->arguments[argCounter - 1] = '\0';
         free(currCommand->arguments[argCounter]);
@@ -340,9 +361,30 @@ void executeForeground(struct shellAttributes* shell, struct command* current)
             shell->lastForegroundStatus = 1;
             break;
         }
+
+        // set signal for SIGINT for foreground children to default behavior based off canvas signal exploration
+        struct sigaction SIGINT_action = { 0 };
+        // SET SIGINT to be ignored
+        SIGINT_action.sa_handler = SIG_DFL;
+        sigfillset(&SIGINT_action.sa_mask);
+        SIGINT_action.sa_flags = 0;
+        // Install our signal handler
+        sigaction(SIGINT, &SIGINT_action, NULL);
+
+        // Initialize SIGTSTP_action struct to be empty - code based off canvas signals exploration
+        struct sigaction SIGTSTP_action = { 0 };
+        // SET SIGTSTP to use a custom handler
+        SIGTSTP_action.sa_handler = handle_SIGTSTP_child;
+        sigfillset(&SIGTSTP_action.sa_mask);
+        SIGTSTP_action.sa_flags = 0;
+        // Install our signal handler
+        sigaction(SIGTSTP, &SIGTSTP_action, NULL);
+
         execvp(current->binary, current->arguments);
+
         // exec only returns if there is an error
         perror("execvp");
+
         // exit status of 1 when binary not found
         exit(1);
     default:
@@ -391,6 +433,16 @@ int executeBackground(struct command* current)
             // set this, pass in shell
             // shell->lastForegroundStatus = 2;
         }
+
+        // set signal for SIGTSTP for background children to ignore based off canvas signal exploration
+        struct sigaction SIGTSTP_action = { 0 };
+        // SET SIGINT to be ignored
+        SIGTSTP_action.sa_handler = SIG_IGN;
+        sigfillset(&SIGTSTP_action.sa_mask);
+        SIGTSTP_action.sa_flags = 0;
+        // Install our signal handler
+        sigaction(SIGTSTP, &SIGTSTP_action, NULL);
+
         execvp(current->binary, current->arguments);
         // exec only returns if there is an error
         perror("execvp");
@@ -471,6 +523,24 @@ void checkBackgroundProcs(struct shellAttributes* shell)
 
 int main(int argc, char* argv[])
 {
+    // Initialize SIGINT_action struct to be empty - code from canvas signals exploration
+    struct sigaction SIGINT_action = { 0 };
+    // SET SIGINT to be ignored
+    SIGINT_action.sa_handler = SIG_IGN;
+    sigfillset(&SIGINT_action.sa_mask);
+    SIGINT_action.sa_flags = 0;
+    // Install our signal handler
+    sigaction(SIGINT, &SIGINT_action, NULL);
+
+    // Initialize SIGTSTP_action struct to be empty - code based off canvas signals exploration
+    struct sigaction SIGTSTP_action = { 0 };
+    // SET SIGTSTP to use a custom handler
+    SIGTSTP_action.sa_handler = handle_SIGTSTP_shell;
+    sigfillset(&SIGTSTP_action.sa_mask);
+    SIGTSTP_action.sa_flags = 0;
+    // Install our signal handler
+    sigaction(SIGTSTP, &SIGTSTP_action, NULL);
+
     // initialize our shellAttributes struct to store info the shell as a whole needs
     struct shellAttributes* shell = malloc(sizeof(struct shellAttributes));
     shell->bgActive = NULL;
