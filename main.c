@@ -6,6 +6,7 @@
 #include <sys/wait.h>
 #include <sys/types.h>
 #include <sys/types.h>
+#include <fcntl.h>
 
 
 struct shellAttributes
@@ -172,12 +173,14 @@ bool handleBuiltIns(struct shellAttributes* currShell, struct command* current)
     else if (strcmp(current->binary, "status") == 0)
     {
         printf("exit status %d\n", currShell->lastForegroundStatus);
+        fflush(stdout);
         printf("I need to have support for signals also\n");
         return true;
     }
     else if (strcmp(current->binary, "exit") == 0)
     {
         printf("exiting\n"); // NEED TO CHECK NO ARGS?
+        fflush(stdout);
         printf("I NEED TO KILL ALL PROCS I STARTED\n");
         exit(0);
     }
@@ -191,7 +194,8 @@ bool wireIORedirection(struct command* currCommand)
     // create an entire new array so we don't have to worry about shifting values upon detecting io redirection
 
     char **ioArguments = malloc(513 * sizeof(char*));
-
+    bool wiredStdout = false;
+    bool wiredStdin = false;
     // copy over all arguments until chars < or > are encountered
     int ioCounter = 0;
     int argCounter = 0;
@@ -199,26 +203,46 @@ bool wireIORedirection(struct command* currCommand)
     {
         if (strcmp(currCommand->arguments[argCounter], "<") == 0)
         {
-            printf("Doing some stuff for input\n");
             // An input file redirected via stdin should be opened for reading only; if your shell cannot open the file for reading, it should print an error message and set the exit status to 1 (but don't exit the shell).
             char* inFilePath = currCommand->arguments[argCounter + 1];
-            //int file_descriptor = open(inFilePath, O_RD | O_CREAT | O_TRUNC, 0640);
-            // dup2()
-            argCounter += 2;
+            int fd = open(inFilePath, O_RDONLY);
+            if (fd == -1) 
+            {
+                printf("error: open failed for reading \"%s\"\n", inFilePath);
+                fflush(stdout);
+                return false;
+            }
+            // Use dup2 to point in file to standard in - based off canvas example for io
+            int result = dup2(fd, 0);
+            if (result == -1) 
+            {
+                perror("dup2");
+                fflush(stderr);
+            }
 
-            // if can't open either
-            return false;
+            wiredStdin = true;
+            argCounter += 2;
         }
         else if (strcmp(currCommand->arguments[argCounter], ">") == 0)
         {
-            printf("Doing some stuff for output\n");
             // Similarly, an output file redirected via stdout should be opened for writing only; it should be truncated if it already exists or created if it does not exist. If your shell cannot open the output file it should print an error message and set the exit status to 1 (but don't exit the shell).
             char* outFilePath = currCommand->arguments[argCounter + 1];
-            //int file_descriptor = open(inFilePath, O_RD | O_CREAT | O_TRUNC, 0640);
-            // dup2()
+            int fd = open(outFilePath, O_WRONLY | O_CREAT | O_TRUNC, 0640);
+            if (fd == -1) 
+            {
+                printf("open failed for writing \"%s\"\n", outFilePath);
+                fflush(stdout);
+                return false;
+            }
+            // use dup2 to point stdout to target file - based off canvas example for io
+            int result = dup2(fd, 1);
+            if (result == -1) {
+                perror("dup2()");
+                fflush(stderr);
+            }
+
+            wiredStdout = true;
             argCounter += 2;
-            // if can't open either
-            return false;
         }
         else
         {
@@ -230,6 +254,49 @@ bool wireIORedirection(struct command* currCommand)
     }
     ioArguments[ioCounter] = '\0';
 
+    
+    // wire stdin and out for background processes if not user redirected
+    if (currCommand->background) 
+    {
+        char const devNull[] = "/dev/null";
+        if (!wiredStdin)
+        {
+            int fd = open(devNull, O_RDONLY);
+            if (fd == -1)
+            {
+                printf("error: open failed for reading \"%s\"\n", devNull);
+                fflush(stdout);
+                return false;
+            }
+            printf("opened\n");
+            // Use dup2 to point in file to standard in - based off canvas example for io
+            int result = dup2(fd, 0);
+            if (result == -1)
+            {
+                perror("dup2");
+                fflush(stderr);
+            }
+        }
+
+        if (!wiredStdout)
+        {
+            int fd = open(devNull, O_WRONLY);
+            if (fd == -1)
+            {
+                printf("open failed for writing \"%s\"\n", devNull);
+                fflush(stdout);
+                return false;
+            }
+            printf("opened\n");
+            // use dup2 to point stdout to target file - based off canvas example for io
+            int result = dup2(fd, 1);
+            if (result == -1) {
+                perror("dup2()");
+                fflush(stderr);
+            }
+        }
+    }
+    
     // free our prior args and replace with ioArgs
     while (currCommand->arguments[argCounter] != '\0')
     {
@@ -269,6 +336,9 @@ void executeForeground(struct shellAttributes* shell, struct command* current)
         if (!wireIORedirection(current))
         {
             printf("Something terrible! Set the exit status to 1\n");
+            fflush(stdout);
+            shell->lastForegroundStatus = 1;
+            break;
         }
         execvp(current->binary, current->arguments);
         // exec only returns if there is an error
@@ -285,6 +355,7 @@ void executeForeground(struct shellAttributes* shell, struct command* current)
             shell->lastForegroundStatus = WEXITSTATUS(childStatus);
         }
         printf("%d status code\n", shell->lastForegroundStatus);
+        fflush(stdout);
 
         /*
         * 
@@ -296,6 +367,7 @@ void executeForeground(struct shellAttributes* shell, struct command* current)
 
 
         printf("PARENT(%d): child(%d) terminated. Exiting\n", getpid(), spawnPid);
+        fflush(stdout);
         break;
     }
 }
@@ -316,6 +388,8 @@ int executeBackground(struct command* current)
         if (!wireIORedirection(current))
         {
             printf("Something terrible! Set the exit status to 1\n");
+            // set this, pass in shell
+            // shell->lastForegroundStatus = 2;
         }
         execvp(current->binary, current->arguments);
         // exec only returns if there is an error
@@ -325,6 +399,7 @@ int executeBackground(struct command* current)
         // In the parent process
         // Wait for child's termination
         printf("PARENT(%d) launched BACKGROUND child(%d)\n", getpid(), spawnPid);
+        fflush(stdout);
         return spawnPid;
     }
 
@@ -337,7 +412,8 @@ void checkBackgroundProcs(struct shellAttributes* shell)
     iter = shell->bgActive;
     while (iter != NULL)
     {
-        printf("Looking at bg pid %d", iter->pid);
+        printf("Looking at bg pid %d\n", iter->pid);
+        fflush(stdout);
         int childStatus;
         int childReturn= waitpid(iter->pid, &childStatus, WNOHANG);
         if (childReturn) {
@@ -345,7 +421,7 @@ void checkBackgroundProcs(struct shellAttributes* shell)
             {
                 int status = WEXITSTATUS(childStatus);
                 printf(" !!!!!!!!!!!!!!! Returned pid %d with status %d\n", childReturn, status);
-
+                fflush(stdout);
                 /*
                 
                 } else{
@@ -362,20 +438,32 @@ void checkBackgroundProcs(struct shellAttributes* shell)
                 // remove from middle of linked list by setting previous to skip it
                 previous->next = iter->next;
                 struct bgProcess* hold = iter;
-                free(hold);
+                printf("first free causing issues??\n");
+                fflush(stdout);
                 iter = iter->next;
+                printf("I FREED %p", hold);
+                free(hold);
+                printf("NOT first free causing issues\n");
+                fflush(stdout);
+
             } 
             else
             {
                // we're at the start so we set the head to the following
                 shell->bgActive = iter->next;
                 struct bgProcess* hold = iter;
-                free(hold);
+                printf("No its the second!\n");
+                fflush(stdout);
                 iter = iter->next;
+                printf("I FREED %p", hold);
+                free(hold);
+                printf("NOT second free causing issues\n");
+                fflush(stdout);
             }
             // iter is now a new node and previous is directly before our new iter
             continue;
         }
+        printf("Not the frees somehow\n");
         previous = iter;
         iter = iter->next;
     }
@@ -391,9 +479,9 @@ int main(int argc, char* argv[])
     while (run)
     {
         // while backgroundProc->next != NULL - waitid nhohang for all.
-        fflush(stdout);
         checkBackgroundProcs(shell);
         printf(": ");
+        fflush(stdout);
         char* line = NULL;
         size_t len = 0;
         getline(&line, &len, stdin);
@@ -412,21 +500,6 @@ int main(int argc, char* argv[])
             continue;
         }
         free(line);
-        
-        printf("binary: %s\n", currCommand->binary);
-        printf("arguments: \n");
-        int argCounter = 0;
-        while (currCommand->arguments[argCounter] != '\0')
-        {
-            printf("index %d -> %s \n", argCounter, currCommand->arguments[argCounter]);
-            argCounter++;
-        }
-        printf("\n");
-
-        wireIORedirection(currCommand);
-
-        printf("Exiting for testing io stuff");
-        exit(1);
         
         if (!handleBuiltIns(shell, currCommand))
         {
@@ -456,7 +529,7 @@ int main(int argc, char* argv[])
         
         // free dynamically allocated
         free(currCommand->binary);
-        argCounter = 0;
+        int argCounter = 0;
         while (currCommand->arguments[argCounter] != '\0')
         {
             //  THINK WE MAY BE ABLE TO FREE ONE AFTER THIS TOO FOR OUR NULL TERMINATOR! -----------------------------------------------------------------------------!
