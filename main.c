@@ -37,7 +37,7 @@ void handle_SIGTSTP_shell(int signo)
 
     if (allowBackground)
     {
-        char* message = "\nEntering foreground-only mode (& is now ignored)\n ";
+        char* message = "Entering foreground-only mode (& is now ignored)\n ";
         allowBackground = false;
         write(STDOUT_FILENO, message, 50);
         fflush(stdout);
@@ -357,8 +357,8 @@ void executeForeground(struct shellAttributes* shell, struct command* current)
         // In the child process
         if (!wireIORedirection(current))
         {
-            shell->lastForegroundStatus = 1;
-            break;
+            // exit from the forked child when io redirection fails
+            exit(1);
         }
 
         // Initialize SIGTSTP_action struct to be empty - code based off canvas signals exploration
@@ -417,9 +417,7 @@ int executeBackground(struct command* current)
         // In the child process
         if (!wireIORedirection(current))
         {
-            // IS this the right action!? Someone??? ----------------------------------------------------------------------------- !
-            printf("Something terrible! Set the exit status to 1\n");
-            break;
+            exit(1);
         }
 
         // SIGINT is already set to be ignored from the parent
