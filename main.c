@@ -9,9 +9,15 @@
 #include <fcntl.h>
 #include <signal.h>
 
-// GLOBAL
+/*
+* Global variables for handling SIGSTP correctly by the shell process
+*/
 bool allowBackground = true;
+int lastForegroundPid = 0;
 
+/*
+* Attributes for the shell needed throughout the life of the program
+*/
 struct shellAttributes
 {
     int* backgroundPids;
@@ -22,19 +28,43 @@ struct shellAttributes
     int lastSignalStatus;
 };
 
+/*
+* Attributes needed for every command run from the shell
+*/
 struct command 
 {
     char* binary;
-    // continually reallocate for args?
     char** arguments;
     int status;
     bool background;
 };
 
-/* Our signal handler for SIGINT based off the canvas signals exploration*/
-void handle_SIGTSTP_shell(int signo) 
+/*
+* handles SIGTSTP when recieved by the shell process
+*/
+void handle_SIGTSTP_shell(int signo)
 {
+    
+    // check if the last foreground ran process is still running. block with wait if so
+    if (lastForegroundPid)
+    {
+        int childStatus;
+        int pid;
+        pid = waitpid(lastForegroundPid, &childStatus, 0);
+        printf("I waited up here to and got -> ");
+        if (WIFEXITED(childStatus))
+        {
+            printf("Something different wtf %d", WEXITSTATUS(childStatus));
+        }
+        else
+        {
+            printf("diff??? terminated by signal %d\n", WTERMSIG(childStatus));
+            fflush(stdout);
+        }
 
+    }
+
+    // based on the allowBackground status flip to deny background if previously allowed or flip to allow from denied
     if (allowBackground)
     {
         char* message = "Entering foreground-only mode (& is now ignored)\n ";
@@ -49,15 +79,16 @@ void handle_SIGTSTP_shell(int signo)
         write(STDOUT_FILENO, message, 30);
         fflush(stdout);
     }
+    // getline is normally interrupted and restarted based on SA RESTART
+    // reprint out the prompt for the user
     write(STDOUT_FILENO, ": ", 2);
     fflush(stdout);
 }
 
-void exitShell()
-{
-    // kill any other procs or jobs started
-}
-
+/*
+* Accepts a string and replaces any instances of $$ anywhere in the string with the 
+* pid of the process running
+*/
 char* charExpansion(char* expand)
 {
     int count = 0;
@@ -105,6 +136,11 @@ char* charExpansion(char* expand)
     return expanded;
 }
 
+/*
+* Accepts user input from getline, tokenizes based on whitespace, and populates currCommmand
+* with the binary (first arg in input), arguments as an array of input tokenized, and determines
+* if commands are to be initiated in the background
+*/
 bool parseCommand(char* input, struct command* currCommand)
 {
     char* saveptr = input;
@@ -115,9 +151,9 @@ bool parseCommand(char* input, struct command* currCommand)
 
     while ((token = strtok_r(saveptr, " \n", &saveptr)))
     {
-        // perform character expansion and set token to returned char array pointer
+        // perform character expansion for instances of $$ and set token to returned char array pointer
         token = charExpansion(token);
-        // check for comments and pull the binary
+        // check for comments, pull the binary, initialize/start filling the arguments array
         if (!firstProcessed)
         {
             firstProcessed = true;
@@ -146,15 +182,14 @@ bool parseCommand(char* input, struct command* currCommand)
             continue;
         }
         
-
+        // fill the arguments array with all the remaining tokens
         currCommand->arguments[argCounter] = malloc(strlen(token) + 1);
-        //currCommand->arguments[argCounter] = token;
         strcpy(currCommand->arguments[argCounter], token);
         argCounter++;
     }
     currCommand->arguments[argCounter] = '\0';
 
-    // check if its a background process
+    // check if the command indicates a background process
     currCommand->background = false;
     char* lastVal = currCommand->arguments[argCounter - 1];
     if (strcmp(lastVal, "&") == 0)
@@ -171,10 +206,14 @@ bool parseCommand(char* input, struct command* currCommand)
     return true;
 }
 
+/*
+* Checks if the binary is a built in command and returns if a built in was ran.
+* Contains the commands cd, status, and exit
+*/
 bool handleBuiltIns(struct shellAttributes* currShell, struct command* current)
 {
     // changes directory based on argument of relative or absolute path
-    // if no path is provided change to the HOME directory
+    // if no path is provided changes to the HOME directory
     if (strcmp(current->binary, "cd") == 0)
     {
         // change to HOME directory if the only arg is cd
@@ -184,12 +223,15 @@ bool handleBuiltIns(struct shellAttributes* currShell, struct command* current)
 
             chdir(homeDir);
         } 
+        // ignores any extra arguments provided
         else
         {
             chdir(current->arguments[1]);
         }
         return true;
     }
+    // status command returns the exit value or signal value stored in the shell structure
+    // based on the last foregound commands exit or signal termination status
     else if (strcmp(current->binary, "status") == 0)
     {
         if (currShell->lastExitFromSignal)
@@ -203,6 +245,7 @@ bool handleBuiltIns(struct shellAttributes* currShell, struct command* current)
         fflush(stdout);
         return true;
     }
+    // exit kills all processes the shell has started and exits the shell program
     else if (strcmp(current->binary, "exit") == 0)
     {
         // kill all currently running child procs before exiting
@@ -219,12 +262,14 @@ bool handleBuiltIns(struct shellAttributes* currShell, struct command* current)
     return false;
 }
 
+/*
+* Parses the current arguments and finds < and > to pull arguments for redirection and
+* remove from the arguments array. The array is rewritten to an array with IO arguments removed
+* and dup2 is used to redirect to the files specified after the shell opens the files
+*/
 bool wireIORedirection(struct command* currCommand)
 {
-    // The redirection must be done before using exec() to run the command but should be done in the child proc.
-    
     // create an entire new array so we don't have to worry about shifting values upon detecting io redirection
-
     char **ioArguments = malloc(513 * sizeof(char*));
     bool wiredStdout = false;
     bool wiredStdin = false;
@@ -278,6 +323,7 @@ bool wireIORedirection(struct command* currCommand)
         }
         else
         {
+            // for non io redirection arguments copy to the new array normally in the next available position
             ioArguments[ioCounter] = malloc(strlen(currCommand->arguments[argCounter]) + 1);
             strcpy(ioArguments[ioCounter], currCommand->arguments[argCounter]);
             ioCounter++;
@@ -286,7 +332,7 @@ bool wireIORedirection(struct command* currCommand)
     }
     ioArguments[ioCounter] = '\0';
 
-    // wire stdin and out for background processes if not user redirected
+    // wire stdin and out for background processes to /dev/null if not user redirected
     if (currCommand->background) 
     {
         char const devNull[] = "/dev/null";
@@ -330,7 +376,6 @@ bool wireIORedirection(struct command* currCommand)
     // free our prior args and replace with ioArgs
     while (currCommand->arguments[argCounter] != '\0')
     {
-        //  THINK WE MAY BE ABLE TO FREE ONE AFTER THIS TOO FOR OUR NULL TERMINATOR! -----------------------------------------------------------------------------!
         free(currCommand->arguments[argCounter]);
         argCounter++;
     }
@@ -340,6 +385,11 @@ bool wireIORedirection(struct command* currCommand)
     return true;
 }
 
+/*
+* Execute a commmand in the foreground based on the binary and arguments in the passed
+* commmand structure. Block the shell process by waiting on the spawned off process
+* until it completes. Store the exit status or termination signal in the shell structuree.
+*/
 void executeForeground(struct shellAttributes* shell, struct command* current)
 {
     // below based on the canvas example in process API - Executing a new program
@@ -384,6 +434,7 @@ void executeForeground(struct shellAttributes* shell, struct command* current)
     default:
         // In the parent process
         // Wait for child's termination
+        lastForegroundPid = spawnPid;
         spawnPid = waitpid(spawnPid, &childStatus, 0);
 
         if (WIFEXITED(childStatus))
@@ -402,6 +453,10 @@ void executeForeground(struct shellAttributes* shell, struct command* current)
     }
 }
 
+/*
+* Execute a commmand in the background based on the binary and arguments in the passed
+* commmand structure. Do not wait on the process spawned.
+*/
 int executeBackground(struct command* current)
 {
     // below based on the canvas example in process API - Executing a new program
@@ -444,6 +499,12 @@ int executeBackground(struct command* current)
 
 }
 
+/*
+* Iterate over the pids for all background processes started and
+* call waitpid non blocking. If they've returned pull the exit status 
+* or signal termination status. Replace in the background pid array with 
+* 0 so they are not reprocessed.
+*/
 void checkBackgroundProcs(struct shellAttributes* shell)
 {
     for (int i = 0; i < shell->bgArraySize; i++)
@@ -473,6 +534,11 @@ void checkBackgroundProcs(struct shellAttributes* shell)
     }
 }
 
+/*
+* Entry point for the shell. Initializes our shell and command structures.
+* Establishes signal action handlers. Repeatedly runs through prompting the user
+* and initiating built ins or starting new processes.
+*/
 int main(int argc, char* argv[])
 {
     // Initialize SIGINT_action struct to be empty - code from canvas signals exploration
