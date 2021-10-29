@@ -14,17 +14,12 @@ bool allowBackground = true;
 
 struct shellAttributes
 {
-    struct bgProcesss* bgActive;
+    int* backgroundPids;
+    int bgArraySize;
     // set to 0 at the start
     int lastForegroundStatus;
     bool lastExitFromSignal;
     int lastSignalStatus;
-};
-
-struct bgProcess
-{
-    int pid;
-    struct bgProcess* next;
 };
 
 struct command 
@@ -37,7 +32,8 @@ struct command
 };
 
 /* Our signal handler for SIGINT based off the canvas signals exploration*/
-void handle_SIGTSTP_shell(int signo) {
+void handle_SIGTSTP_shell(int signo) 
+{
 
     if (allowBackground)
     {
@@ -53,6 +49,8 @@ void handle_SIGTSTP_shell(int signo) {
         write(STDOUT_FILENO, message, 30);
         fflush(stdout);
     }
+    write(STDOUT_FILENO, ": ", 2);
+    fflush(stdout);
 }
 
 void exitShell()
@@ -186,7 +184,7 @@ bool handleBuiltIns(struct shellAttributes* currShell, struct command* current)
 
             chdir(homeDir);
         } 
-        else // DO WE WANT TO CHECK THAT ITS EXACTLY 1? --------------------------------------------------------------------------------------- !
+        else
         {
             chdir(current->arguments[1]);
         }
@@ -207,9 +205,15 @@ bool handleBuiltIns(struct shellAttributes* currShell, struct command* current)
     }
     else if (strcmp(current->binary, "exit") == 0)
     {
-        printf("exiting\n"); // NEED TO CHECK NO ARGS?
-        fflush(stdout);
-        printf("I NEED TO KILL ALL PROCS I STARTED\n");
+        // kill all currently running child procs before exiting
+        for (int i = 0; i < currShell->bgArraySize; i++)
+        {
+            if (!currShell->backgroundPids[i])
+            {
+                continue;
+            }
+            kill(currShell->backgroundPids[i], SIGKILL);
+        }
         exit(0);
     }
     return false;
@@ -236,7 +240,7 @@ bool wireIORedirection(struct command* currCommand)
             int fd = open(inFilePath, O_RDONLY);
             if (fd == -1) 
             {
-                printf("error: open failed for reading \"%s\"\n", inFilePath);
+                printf("cannot open %s for input\n", inFilePath);
                 fflush(stdout);
                 return false;
             }
@@ -258,7 +262,7 @@ bool wireIORedirection(struct command* currCommand)
             int fd = open(outFilePath, O_WRONLY | O_CREAT | O_TRUNC, 0640);
             if (fd == -1) 
             {
-                printf("open failed for writing \"%s\"\n", outFilePath);
+                printf("cannot open %s for output\n", outFilePath);
                 fflush(stdout);
                 return false;
             }
@@ -282,7 +286,6 @@ bool wireIORedirection(struct command* currCommand)
     }
     ioArguments[ioCounter] = '\0';
 
-    
     // wire stdin and out for background processes if not user redirected
     if (currCommand->background) 
     {
@@ -292,35 +295,34 @@ bool wireIORedirection(struct command* currCommand)
             int fd = open(devNull, O_RDONLY);
             if (fd == -1)
             {
-                printf("error: open failed for reading \"%s\"\n", devNull);
+                printf("cannot open %s for input\n", devNull);
                 fflush(stdout);
                 return false;
             }
-            printf("opened\n");
             // Use dup2 to point in file to standard in - based off canvas example for io
             int result = dup2(fd, 0);
             if (result == -1)
             {
                 perror("dup2");
                 fflush(stderr);
+                return false;
             }
         }
-
         if (!wiredStdout)
         {
             int fd = open(devNull, O_WRONLY);
             if (fd == -1)
             {
-                printf("open failed for writing \"%s\"\n", devNull);
+                printf("cannot open %s for output\n", devNull);
                 fflush(stdout);
                 return false;
             }
-            printf("opened\n");
             // use dup2 to point stdout to target file - based off canvas example for io
             int result = dup2(fd, 1);
             if (result == -1) {
                 perror("dup2()");
                 fflush(stderr);
+                return false;
             }
         }
     }
@@ -333,16 +335,8 @@ bool wireIORedirection(struct command* currCommand)
         argCounter++;
     }
     free(currCommand->arguments);
-
+    // overwrite our existing arguments with the new io arguments
     currCommand->arguments = ioArguments;
-
-    ioCounter = 0;
-    printf("Our io arguments sir -----> ");
-    while (currCommand->arguments[ioCounter] != '\0')
-    {
-        printf("%s ", currCommand->arguments[ioCounter]);
-        ioCounter++;
-    }
     return true;
 }
 
@@ -363,8 +357,6 @@ void executeForeground(struct shellAttributes* shell, struct command* current)
         // In the child process
         if (!wireIORedirection(current))
         {
-            printf("Something terrible! Set the exit status to 1\n");
-            fflush(stdout);
             shell->lastForegroundStatus = 1;
             break;
         }
@@ -398,18 +390,14 @@ void executeForeground(struct shellAttributes* shell, struct command* current)
         {
             shell->lastForegroundStatus = WEXITSTATUS(childStatus);
             shell->lastExitFromSignal = false;
-            printf("%d status code\n", shell->lastForegroundStatus);
         }
         else 
         {
             shell->lastExitFromSignal = true;
             shell->lastSignalStatus = WTERMSIG(childStatus);
-            printf("Child %d exited abnormally due to signal %d\n", shell->lastSignalStatus);
+            printf("terminated by signal %d\n", shell->lastSignalStatus);
+            fflush(stdout);
         }
-        fflush(stdout);
-
-        printf("PARENT(%d): child(%d) terminated. Exiting\n", getpid(), spawnPid);
-        fflush(stdout);
         break;
     }
 }
@@ -429,9 +417,9 @@ int executeBackground(struct command* current)
         // In the child process
         if (!wireIORedirection(current))
         {
+            // IS this the right action!? Someone??? ----------------------------------------------------------------------------- !
             printf("Something terrible! Set the exit status to 1\n");
-            // set this, pass in shell
-            // shell->lastForegroundStatus = 2;
+            break;
         }
 
         // SIGINT is already set to be ignored from the parent
@@ -451,7 +439,7 @@ int executeBackground(struct command* current)
     default:
         // In the parent process
         // Wait for child's termination
-        printf("background pid is %d\n", getpid(), spawnPid);
+        printf("background pid is %d\n", spawnPid);
         fflush(stdout);
         return spawnPid;
     }
@@ -460,65 +448,30 @@ int executeBackground(struct command* current)
 
 void checkBackgroundProcs(struct shellAttributes* shell)
 {
-    struct bgProcess* iter = NULL;
-    struct bgProcess* previous = NULL;
-    iter = shell->bgActive;
-    while (iter != NULL)
+    for (int i = 0; i < shell->bgArraySize; i++)
     {
-        printf("Looking at bg pid %d\n", iter->pid);
-        fflush(stdout);
-        int childStatus;
-        int childReturn= waitpid(iter->pid, &childStatus, WNOHANG);
-        if (childReturn) {
-            if (WIFEXITED(childStatus))
-            {
-                int status = WEXITSTATUS(childStatus);
-                printf(" !!!!!!!!!!!!!!! Returned pid %d with status %d\n", childReturn, status);
-                fflush(stdout);
-                /*
-                
-                } else{
-			printf("Child %d exited abnormally due to signal %d\n", childPid, WTERMSIG(childStatus));
-		}
-
-                */
-
-
-
-            }
-            if (previous != NULL)
-            {
-                // remove from middle of linked list by setting previous to skip it
-                previous->next = iter->next;
-                struct bgProcess* hold = iter;
-                printf("first free causing issues??\n");
-                fflush(stdout);
-                iter = iter->next;
-                printf("I FREED %p", hold);
-                free(hold);
-                printf("NOT first free causing issues\n");
-                fflush(stdout);
-
-            } 
-            else
-            {
-               // we're at the start so we set the head to the following
-                shell->bgActive = iter->next;
-                struct bgProcess* hold = iter;
-                printf("No its the second!\n");
-                fflush(stdout);
-                iter = iter->next;
-                printf("I FREED %p", hold);
-                free(hold);
-                printf("NOT second free causing issues\n");
-                fflush(stdout);
-            }
-            // iter is now a new node and previous is directly before our new iter
+        if (!shell->backgroundPids[i])
+        {
             continue;
         }
-        printf("Not the frees somehow\n");
-        previous = iter;
-        iter = iter->next;
+        int childStatus;
+        int childReturn = waitpid(shell->backgroundPids[i], &childStatus, WNOHANG);
+        if (childReturn)
+        {
+            printf("background pid %d is done: ", shell->backgroundPids[i]);
+            if (WIFEXITED(childStatus))
+            {
+                int bgExitStatus = WEXITSTATUS(childStatus);
+                printf("exit value %d\n", bgExitStatus);
+            }
+            else
+            {
+                int bgSignalStatus = WTERMSIG(childStatus);
+                printf("terminated by signal %d\n", bgSignalStatus);
+            }
+            fflush(stdout);
+            shell->backgroundPids[i] = 0;
+        }        
     }
 }
 
@@ -545,7 +498,8 @@ int main(int argc, char* argv[])
 
     // initialize our shellAttributes struct to store info the shell as a whole needs
     struct shellAttributes* shell = malloc(sizeof(struct shellAttributes));
-    shell->bgActive = NULL;
+    shell->backgroundPids = malloc(2 * sizeof(int));
+    shell->bgArraySize = 0;
     shell->lastForegroundStatus = 0;
     shell->lastExitFromSignal = false;
     shell->lastSignalStatus = 0;
@@ -579,20 +533,10 @@ int main(int argc, char* argv[])
         {
             if (currCommand->background)
             {
-                struct bgProcess* background = malloc(sizeof(struct bgProcess));
-                background->pid = executeBackground(currCommand);
-                // if there are no active background procs this becomes the first
-                // otherwise add at the front of the list
-                if (shell->bgActive == NULL)
-                {
-                    printf("First background!\n");
-                    shell->bgActive = background;
-                }
-                else
-                {
-                    background->next = shell->bgActive;
-                    shell->bgActive = background;
-                }
+                // store pid of background process started
+                shell->backgroundPids[shell->bgArraySize] = executeBackground(currCommand);
+                shell->backgroundPids = realloc(shell->backgroundPids, (2 + shell->bgArraySize) * sizeof(int));
+                shell->bgArraySize += 1;
             }
             else
             {
