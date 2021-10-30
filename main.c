@@ -10,10 +10,9 @@
 #include <signal.h>
 
 /*
-* Global variables for handling SIGSTP correctly by the shell process
+* Global variable for handling SIGSTP correctly by the shell process
 */
 bool allowBackground = true;
-int lastForegroundPid = 0;
 
 /*
 * Attributes for the shell needed throughout the life of the program
@@ -22,7 +21,6 @@ struct shellAttributes
 {
     int* backgroundPids;
     int bgArraySize;
-    // set to 0 at the start
     int lastForegroundStatus;
     bool lastExitFromSignal;
     int lastSignalStatus;
@@ -44,26 +42,6 @@ struct command
 */
 void handle_SIGTSTP_shell(int signo)
 {
-    
-    // check if the last foreground ran process is still running. block with wait if so
-    if (lastForegroundPid)
-    {
-        int childStatus;
-        int pid;
-        pid = waitpid(lastForegroundPid, &childStatus, 0);
-        printf("I waited up here to and got -> ");
-        if (WIFEXITED(childStatus))
-        {
-            printf("Something different wtf %d", WEXITSTATUS(childStatus));
-        }
-        else
-        {
-            printf("diff??? terminated by signal %d\n", WTERMSIG(childStatus));
-            fflush(stdout);
-        }
-
-    }
-
     // based on the allowBackground status flip to deny background if previously allowed or flip to allow from denied
     if (allowBackground)
     {
@@ -169,11 +147,6 @@ bool parseCommand(char* input, struct command* currCommand)
 
             // store binary name as the first index of arguments
             // initialize for a max of 512 arguments with space for a null terminator
-            //
-            // IMPROVEMENT
-            // GET REALLOC TO WORK!!!!
-            //
-            //
             currCommand->arguments = malloc(513 * sizeof(char*));
             currCommand->arguments[0] = malloc(strlen(currCommand->binary) + 1);
             strcpy(currCommand->arguments[0], currCommand->binary);
@@ -219,8 +192,7 @@ bool handleBuiltIns(struct shellAttributes* currShell, struct command* current)
         // change to HOME directory if the only arg is cd
         if (current->arguments[1] == NULL) 
         {
-            char* homeDir = getenv("HOME");       
-
+            char* homeDir = getenv("HOME");
             chdir(homeDir);
         } 
         // ignores any extra arguments provided
@@ -280,7 +252,7 @@ bool wireIORedirection(struct command* currCommand)
     {
         if (strcmp(currCommand->arguments[argCounter], "<") == 0)
         {
-            // An input file redirected via stdin should be opened for reading only; if your shell cannot open the file for reading, it should print an error message and set the exit status to 1 (but don't exit the shell).
+            // open file to read as input redirection
             char* inFilePath = currCommand->arguments[argCounter + 1];
             int fd = open(inFilePath, O_RDONLY);
             if (fd == -1) 
@@ -302,7 +274,7 @@ bool wireIORedirection(struct command* currCommand)
         }
         else if (strcmp(currCommand->arguments[argCounter], ">") == 0)
         {
-            // Similarly, an output file redirected via stdout should be opened for writing only; it should be truncated if it already exists or created if it does not exist. If your shell cannot open the output file it should print an error message and set the exit status to 1 (but don't exit the shell).
+            // open file to redirect to
             char* outFilePath = currCommand->arguments[argCounter + 1];
             int fd = open(outFilePath, O_WRONLY | O_CREAT | O_TRUNC, 0640);
             if (fd == -1) 
@@ -432,9 +404,8 @@ void executeForeground(struct shellAttributes* shell, struct command* current)
         // exit status of 1 when binary not found
         exit(1);
     default:
-        // In the parent process
-        // Wait for child's termination
-        lastForegroundPid = spawnPid;
+        // In the parent process, wait for child termination
+        // store lastForeground for use in our SIGTTERM handler to check if ongoing
         spawnPid = waitpid(spawnPid, &childStatus, 0);
 
         if (WIFEXITED(childStatus))
@@ -446,8 +417,6 @@ void executeForeground(struct shellAttributes* shell, struct command* current)
         {
             shell->lastExitFromSignal = true;
             shell->lastSignalStatus = WTERMSIG(childStatus);
-            printf("terminated by signal %d\n", shell->lastSignalStatus);
-            fflush(stdout);
         }
         break;
     }
@@ -509,6 +478,7 @@ void checkBackgroundProcs(struct shellAttributes* shell)
 {
     for (int i = 0; i < shell->bgArraySize; i++)
     {
+        // skip over 0 values as they've already been checked
         if (!shell->backgroundPids[i])
         {
             continue;
@@ -529,6 +499,7 @@ void checkBackgroundProcs(struct shellAttributes* shell)
                 printf("terminated by signal %d\n", bgSignalStatus);
             }
             fflush(stdout);
+            // replace pid in array with 0 so we don't check its status again in the future
             shell->backgroundPids[i] = 0;
         }        
     }
@@ -570,7 +541,6 @@ int main(int argc, char* argv[])
     bool run = true;
     while (run)
     {
-        // while backgroundProc->next != NULL - waitid nhohang for all.
         checkBackgroundProcs(shell);
         printf(": ");
         fflush(stdout);
@@ -578,13 +548,16 @@ int main(int argc, char* argv[])
         size_t len = 0;
         getline(&line, &len, stdin);
 
+        // handle blank line
         if (*line == '\n')
         {
+            free(line);
             continue;
         }
 
         // create our struct for the command we'll process
         struct command* currCommand = malloc(sizeof(struct command));
+        // if our parsing returns false the command should be ingored and we skip back to the start
         if (!parseCommand(line, currCommand))
         {
             free(currCommand);
@@ -593,6 +566,7 @@ int main(int argc, char* argv[])
         }
         free(line);
         
+        // determing if a command is built in, if so run the command, otherwise start a foreground or background process
         if (!handleBuiltIns(shell, currCommand))
         {
             if (currCommand->background)
@@ -609,18 +583,15 @@ int main(int argc, char* argv[])
             }
         }
         
-        // free dynamically allocated
+        // free all memory allocateed for our command for this iteration
         free(currCommand->binary);
         int argCounter = 0;
         while (currCommand->arguments[argCounter] != '\0')
         {
-            //  THINK WE MAY BE ABLE TO FREE ONE AFTER THIS TOO FOR OUR NULL TERMINATOR! -----------------------------------------------------------------------------!
             free(currCommand->arguments[argCounter]);
             argCounter++;
         }
         free(currCommand->arguments);
         free(currCommand);
     }
-    // free shell and all that  !!!!!!!!!!!!!!!!!! -----------------------------------------------------------------------------!
-    return EXIT_SUCCESS;
 }
